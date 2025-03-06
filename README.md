@@ -13,7 +13,9 @@ This bot integrates ChatGPT with LINE messaging platform, allowing users to inte
 
 ## Testing Results
 
-![LineGPT Testing Results](images/test_results.png)
+![LineGPT Testing Results](./images/test_results.png)
+
+![LineGPT testing 2](./images/test_results2.png)
 
 *Note: To see test results yourself, run the application and visit any of the debug endpoints such as `/test_chinese` or `/test_broadcast`*
 
