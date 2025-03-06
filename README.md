@@ -11,21 +11,58 @@ This bot integrates ChatGPT with LINE messaging platform, allowing users to inte
 - Daily financial news updates
 - Command system for different interactions
 
+## 🔄 LineGPT Workflow
+
+The following diagram illustrates the architecture and data flow of the LineGPT application:
+
+```mermaid
+flowchart LR
+    User(LINE User) <-->|Messages| LINE[LINE Platform]
+    LINE <-->|Webhook Events| Server[LineGPT Server]
+    Server -->|User Query| Process[Message Processing]
+    Process -->|Command Handling| Commands{Commands}
+    Process -->|Regular Message| Chat[Chat Processing]
+    
+    Commands -->|/chat| Chat
+    Commands -->|/reset| Reset[Reset Conversation]
+    Commands -->|/news| News[Financial News]
+    Commands -->|/help| Help[Command List]
+    
+    Chat -->|API Request| OpenAI[OpenAI GPT API]
+    OpenAI -->|AI Response| Chat
+    
+    News -->|API Request| FinAPI[Financial News API]
+    FinAPI -->|News Data| News
+    
+    Chat -->|Format Response| Response[Format Response]
+    News -->|Format News| Response
+    Reset -->|Confirmation| Response
+    Help -->|Command Info| Response
+    
+    Response -->|LINE Message| Server
+    
+    subgraph "Debug Endpoints"
+    Debug[Debug Routes]
+    Server -.->|Testing| Debug
+    Debug -.->|Raw Message| LINE
+    Debug -.->|Test Encoding| OpenAI
+    end
+    
+    style User fill:#f9d71c,stroke:#333,stroke-width:2px
+    style LINE fill:#00c300,stroke:#333,stroke-width:2px,color:#fff
+    style Server fill:#5762d5,stroke:#333,stroke-width:2px,color:#fff
+    style OpenAI fill:#74aa9c,stroke:#333,stroke-width:2px,color:#fff
+    style FinAPI fill:#ff6b6b,stroke:#333,stroke-width:2px
+    style Debug fill:#ff9e00,stroke:#333,stroke-width:2px
+```
+
+This diagram shows how user messages flow through the LINE platform to the LineGPT server, where they are processed based on command type, then routed to appropriate services (OpenAI API or Financial News API), and finally formatted and sent back to the user through LINE.
+
 ## Testing Results
 
 ![LineGPT Testing Results](./images/test_results.png)
 
 ![LineGPT testing 2](./images/test_results2.png)
-
-*Note: To see test results yourself, run the application and visit any of the debug endpoints such as `/test_chinese` or `/test_broadcast`*
-
-### Adding Your Own Test Results
-
-To add your own test results:
-
-1. Take a screenshot of the test results from any debug endpoint
-2. Save the screenshot to the `images` directory as `test_results.png`
-3. If you want to add multiple test result images, you can name them differently and update the reference in this README
 
 ### Example Test Commands
 
