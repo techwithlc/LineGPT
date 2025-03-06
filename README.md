@@ -11,6 +11,138 @@ This bot integrates ChatGPT with LINE messaging platform, allowing users to inte
 - Daily financial news updates
 - Command system for different interactions
 
+## Testing Results
+
+![LineGPT Testing Results](images/test_results.png)
+
+*Note: To see test results yourself, run the application and visit any of the debug endpoints such as `/test_chinese` or `/test_broadcast`*
+
+### Adding Your Own Test Results
+
+To add your own test results:
+
+1. Take a screenshot of the test results from any debug endpoint
+2. Save the screenshot to the `images` directory as `test_results.png`
+3. If you want to add multiple test result images, you can name them differently and update the reference in this README
+
+### Example Test Commands
+
+Here are some examples of how to test your LineGPT setup:
+
+```bash
+# Test sending a simple message to a user
+curl "http://localhost:5000/test_message?user_id=USER_ID_HERE&message=Hello from LineGPT!"
+
+# Test sending Chinese and other non-ASCII messages
+curl "http://localhost:5000/test_chinese?user_id=USER_ID_HERE"
+
+# Test sending a message to all registered users
+curl "http://localhost:5000/test_broadcast?message=Hello everyone from LineGPT!"
+
+# Test encoding with specific text
+curl "http://localhost:5000/test_encoding?user_id=USER_ID_HERE&text=测试中文消息"
+```
+
+Replace `USER_ID_HERE` with your actual LINE user ID, which you can obtain from the `/get_user_id` endpoint.
+
+## What You Can Ask GPT
+
+With LineGPT, you can ask GPT about virtually anything, including:
+
+- General knowledge questions
+- Help with writing or composing messages
+- Explanation of complex concepts
+- Financial advice and market insights
+- Programming help and code examples
+- Language translations
+- Creative writing prompts
+- Math problems and calculations
+- Historical information
+- Current events (up to its knowledge cutoff)
+- Recommendations for books, movies, etc.
+
+Simply start your message with a question or statement, or use the `/chat` command followed by your query.
+
+### Example Interactions
+
+Here are some examples of how you can interact with GPT through LINE:
+
+#### General Questions
+```
+You: What is the capital of France?
+GPT: The capital of France is Paris.
+```
+
+#### Language Translation
+```
+You: /chat Translate "Hello, how are you?" to Chinese
+GPT: 你好，你好吗？(Nǐ hǎo, nǐ hǎo ma?)
+```
+
+#### Programming Help
+```
+You: /chat Write a Python function to calculate Fibonacci numbers
+GPT: Here's a Python function to calculate Fibonacci numbers:
+
+def fibonacci(n):
+    if n <= 0:
+        return 0
+    elif n == 1:
+        return 1
+    else:
+        return fibonacci(n-1) + fibonacci(n-2)
+
+# More efficient version using dynamic programming
+def fibonacci_efficient(n):
+    fib = [0, 1]
+    for i in range(2, n+1):
+        fib.append(fib[i-1] + fib[i-2])
+    return fib[n]
+```
+
+#### Financial Analysis
+```
+You: /chat What factors are affecting the tech stock market right now?
+GPT: Several factors currently affecting the tech stock market include:
+
+1. Interest rate changes by central banks
+2. Inflation concerns
+3. Earnings reports from major tech companies
+4. AI development and adoption rates
+5. Regulatory changes and antitrust investigations
+6. Supply chain challenges
+7. Consumer spending patterns
+...
+```
+
+## GPT's Capabilities
+
+GPT-4 and similar models have impressive capabilities that make them useful for many different tasks:
+
+### 1. Natural Language Understanding
+GPT can understand nuanced questions and provide relevant, contextual responses.
+
+### 2. Multi-lingual Support
+It can communicate in dozens of languages, including Chinese, Japanese, Korean, Spanish, French, and many more.
+
+### 3. Knowledge Base
+The model contains knowledge about a wide range of topics up to its training cutoff date.
+
+### 4. Code Generation and Analysis
+GPT can write code in many programming languages, debug existing code, and explain how code works.
+
+### 5. Creative Writing
+It can help with writing stories, poems, essays, emails, and other forms of creative or professional writing.
+
+### 6. Logical Reasoning
+GPT can follow complex instructions and solve problems step by step.
+
+### 7. Limitations to Be Aware Of
+- GPT doesn't have access to the internet (unless specifically connected)
+- Its knowledge has a cutoff date and may not include very recent events
+- It may occasionally provide incorrect information
+- It cannot execute code or perform actions outside of generating text responses
+
 ## Prerequisites
 
 - Python 3.8 or higher
