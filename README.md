@@ -100,6 +100,8 @@ The application code is organized into several modules for better maintainabilit
 
 ![LineGPT testing 2](./images/test_results2.png)
 
+![Financial News Testing](./images/news.png)
+
 ### Example Test Commands
 
 Here are some examples of how to test your LineGPT setup:
