@@ -454,7 +454,32 @@ def handle_text_message(event):
             
             elif command == '/news':
                 logger.info("Fetching financial news")
-                news = get_financial_news()
+                
+                # Check if there's a subcommand
+                subcommand = command_parts[1].strip().lower() if len(command_parts) > 1 else "stocks"
+                
+                # Handle different news types
+                if subcommand == "stocks":
+                    news = get_financial_news()
+                elif subcommand == "crypto":
+                    news = get_crypto_news()
+                elif subcommand == "market":
+                    news = get_market_summary()
+                elif subcommand == "help":
+                    news = (
+                        "📰 Financial News Commands 📰\n\n"
+                        "/news - Get most active stocks (default)\n"
+                        "/news stocks - Get most active stocks\n"
+                        "/news crypto - Get cryptocurrency prices\n"
+                        "/news market - Get market summary\n"
+                        "/news help - Show this help message"
+                    )
+                else:
+                    news = (
+                        f"Unknown news type: {subcommand}\n"
+                        "Try '/news help' for available options."
+                    )
+                
                 if news:
                     send_line_message(reply_token, news)
                 else:
@@ -668,6 +693,173 @@ def is_json(response):
         return True
     except:
         return False
+
+def get_crypto_news() -> str:
+    """
+    Get cryptocurrency prices and changes
+    
+    Returns:
+        Formatted cryptocurrency prices as a string
+    """
+    try:
+        # Check if API key is available
+        if not FINANCIAL_NEWS_API_KEY:
+            logger.error("Financial News API key is not set")
+            return "Unable to fetch cryptocurrency data: API key is not configured. Please contact the administrator."
+        
+        # Use the crypto prices endpoint (available in free tier)
+        url = f"https://financialmodelingprep.com/api/v3/quotes/crypto?apikey={FINANCIAL_NEWS_API_KEY}"
+        
+        headers = {
+            'User-Agent': 'LineGPT/1.0',
+            'Accept': 'application/json'
+        }
+        
+        logger.info(f"Making request to crypto API: {url.split('apikey=')[0]}apikey=REDACTED")
+        
+        response = requests.get(url, timeout=10, headers=headers)
+        
+        # Log response status
+        logger.info(f"Crypto API response status: {response.status_code}")
+        
+        # Check for error status codes
+        if response.status_code != 200:
+            logger.error(f"Error from crypto API: {response.status_code} - {response.text}")
+            
+            if response.status_code == 403:
+                return (
+                    "⚠️ Cryptocurrency API Subscription Issue ⚠️\n\n"
+                    "The Cryptocurrency feature requires a premium subscription.\n\n"
+                    "To fix this issue:\n"
+                    "1. Upgrade your Financial Modeling Prep API subscription\n"
+                    "2. Visit: https://site.financialmodelingprep.com/developer/docs/pricing\n"
+                    "3. Or update the application to use a different API"
+                )
+            else:
+                return f"Unable to fetch cryptocurrency data: API returned status code {response.status_code}. Please try again later."
+        
+        # Parse the JSON response
+        data = response.json()
+        
+        # Check if we got valid data
+        if not data or not isinstance(data, list):
+            logger.error(f"Invalid response from crypto API: {data}")
+            return "No cryptocurrency data available at the moment. Please try again later."
+        
+        if len(data) == 0:
+            logger.warning("Empty crypto list returned from API")
+            return "No cryptocurrency data found at this time. Please try again later."
+        
+        # Format crypto for LINE message
+        formatted_news = "💰 Cryptocurrency Prices 💰\n\n"
+        
+        # Show only top 10 cryptocurrencies
+        for i, item in enumerate(data[:10], 1):
+            symbol = item.get('symbol', '???').replace('USD', '')
+            price = item.get('price', 0)
+            change_pct = item.get('changesPercentage', 0)
+            name = item.get('name', 'Unknown')
+            
+            # Add emojis for price movement
+            emoji = "🔴" if change_pct < 0 else "🟢"
+            
+            formatted_news += f"{i}. {emoji} {symbol} - {name}\n"
+            formatted_news += f"   Price: ${price:.2f} | Change: {change_pct:.2f}%\n\n"
+        
+        return formatted_news
+    
+    except Exception as e:
+        logger.error(f"Unexpected error fetching crypto data: {str(e)}", exc_info=True)
+        return f"Unable to fetch cryptocurrency data at this time. Error: {str(e)[:100]}... Please try again later."
+
+def get_market_summary() -> str:
+    """
+    Get overall market summary
+    
+    Returns:
+        Formatted market summary as a string
+    """
+    try:
+        # Check if API key is available
+        if not FINANCIAL_NEWS_API_KEY:
+            logger.error("Financial News API key is not set")
+            return "Unable to fetch market summary: API key is not configured. Please contact the administrator."
+        
+        # Use the market indexes endpoint (often available in free tier)
+        url = f"https://financialmodelingprep.com/api/v3/quotes/index?apikey={FINANCIAL_NEWS_API_KEY}"
+        
+        headers = {
+            'User-Agent': 'LineGPT/1.0',
+            'Accept': 'application/json'
+        }
+        
+        logger.info(f"Making request to market API: {url.split('apikey=')[0]}apikey=REDACTED")
+        
+        response = requests.get(url, timeout=10, headers=headers)
+        
+        # Log response status
+        logger.info(f"Market API response status: {response.status_code}")
+        
+        # Check for error status codes
+        if response.status_code != 200:
+            logger.error(f"Error from market API: {response.status_code} - {response.text}")
+            
+            if response.status_code == 403:
+                return (
+                    "⚠️ Market Summary API Subscription Issue ⚠️\n\n"
+                    "The Market Summary feature requires a premium subscription.\n\n"
+                    "To fix this issue:\n"
+                    "1. Upgrade your Financial Modeling Prep API subscription\n"
+                    "2. Visit: https://site.financialmodelingprep.com/developer/docs/pricing\n"
+                    "3. Or update the application to use a different API"
+                )
+            else:
+                return f"Unable to fetch market summary: API returned status code {response.status_code}. Please try again later."
+        
+        # Parse the JSON response
+        data = response.json()
+        
+        # Check if we got valid data
+        if not data or not isinstance(data, list):
+            logger.error(f"Invalid response from market API: {data}")
+            return "No market data available at the moment. Please try again later."
+        
+        if len(data) == 0:
+            logger.warning("Empty market list returned from API")
+            return "No market data found at this time. Please try again later."
+        
+        # Format market summary for LINE message
+        formatted_news = "📊 Market Summary 📊\n\n"
+        
+        # Filter major indices
+        major_indices = ['^DJI', '^GSPC', '^IXIC', '^RUT', '^VIX', '^FTSE', '^N225']
+        filtered_data = [item for item in data if item.get('symbol') in major_indices]
+        
+        # If no major indices found, use the first few indices
+        if not filtered_data:
+            filtered_data = data[:7]
+        
+        for item in filtered_data:
+            symbol = item.get('symbol', '???')
+            name = item.get('name', 'Unknown')
+            price = item.get('price', 0)
+            change_pct = item.get('changesPercentage', 0)
+            
+            # Add emojis for price movement
+            emoji = "🔴" if change_pct < 0 else "🟢"
+            
+            formatted_news += f"{emoji} {name} ({symbol})\n"
+            formatted_news += f"   Price: {price:.2f} | Change: {change_pct:.2f}%\n\n"
+        
+        # Add timestamp
+        from datetime import datetime
+        formatted_news += f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        
+        return formatted_news
+    
+    except Exception as e:
+        logger.error(f"Unexpected error fetching market summary: {str(e)}", exc_info=True)
+        return f"Unable to fetch market summary at this time. Error: {str(e)[:100]}... Please try again later."
 
 if __name__ == "__main__":
     # Start the scheduler in a separate thread
