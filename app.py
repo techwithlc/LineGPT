@@ -27,6 +27,7 @@ import sys
 import logging
 from line_helpers import send_push_message, send_reply_message
 from openai_helpers import OpenAIChat
+import traceback
 
 # Set up logging
 logging.basicConfig(
@@ -96,31 +97,130 @@ def get_financial_news() -> str:
         Formatted financial news as a string
     """
     try:
-        url = f"https://financialmodelingprep.com/api/v3/stock_news?limit=5&apikey={FINANCIAL_NEWS_API_KEY}"
-        response = requests.get(url, timeout=10)  # Added timeout for better error handling
-        response.raise_for_status()  # Raise an exception for bad responses
-        news = response.json()
+        # Check if API key is available
+        if not FINANCIAL_NEWS_API_KEY:
+            logger.error("Financial News API key is not set")
+            return "Unable to fetch financial news: API key is not configured. Please contact the administrator."
         
-        if not news:
-            return "No financial news available at the moment. Please try again later."
+        # Log the API key length for debugging (not the actual key)
+        logger.info(f"Using Financial News API key (length: {len(FINANCIAL_NEWS_API_KEY)})")
         
-        # Format news for LINE message
-        formatted_news = "📈 Today's Financial News 📉\n\n"
-        for i, item in enumerate(news, 1):
-            formatted_news += f"{i}. {item['title']}\n"
-            formatted_news += f"   {item['site']} - {item['publishedDate']}\n"
-            formatted_news += f"   {item['url']}\n\n"
+        # Try multiple endpoints that might be available in different subscription tiers
+        endpoints = [
+            # Try market news first (often available in free tier)
+            {"url": f"https://financialmodelingprep.com/api/v3/stock_market/actives?apikey={FINANCIAL_NEWS_API_KEY}", 
+             "formatter": format_market_actives},
+            # Then try stock news (premium tier)
+            {"url": f"https://financialmodelingprep.com/api/v3/stock_news?limit=5&apikey={FINANCIAL_NEWS_API_KEY}", 
+             "formatter": format_stock_news},
+            # Finally try press releases (might be available in different tiers)
+            {"url": f"https://financialmodelingprep.com/api/v3/press-releases/AAPL?limit=5&apikey={FINANCIAL_NEWS_API_KEY}", 
+             "formatter": format_press_releases}
+        ]
         
-        return formatted_news
-    except requests.RequestException as e:
-        logger.error(f"Error fetching financial news: {str(e)}", exc_info=True)
-        return "Unable to fetch financial news at this time. Please try again later."
-    except (KeyError, ValueError, json.JSONDecodeError) as e:
-        logger.error(f"Error parsing financial news data: {str(e)}", exc_info=True)
-        return "Unable to parse financial news data. Please try again later."
+        # Make requests with proper timeout and headers
+        headers = {
+            'User-Agent': 'LineGPT/1.0',
+            'Accept': 'application/json'
+        }
+        
+        last_error = None
+        last_status = None
+        
+        # Try each endpoint until one works
+        for endpoint in endpoints:
+            try:
+                logger.info(f"Trying financial endpoint: {endpoint['url'].split('apikey=')[0]}apikey=REDACTED")
+                response = requests.get(endpoint["url"], timeout=10, headers=headers)
+                
+                # Log response status
+                logger.info(f"Financial API response status: {response.status_code}")
+                
+                # If successful, format and return the data
+                if response.status_code == 200:
+                    data = response.json()
+                    if data and (isinstance(data, list) and len(data) > 0 or isinstance(data, dict) and data):
+                        return endpoint["formatter"](data)
+                
+                # Store the last error and status for reporting if all endpoints fail
+                last_error = response.text
+                last_status = response.status_code
+                
+            except Exception as e:
+                logger.error(f"Error with endpoint {endpoint['url'].split('apikey=')[0]}: {str(e)}")
+                last_error = str(e)
+                continue
+        
+        # If we got here, all endpoints failed
+        if last_status == 403:
+            return (
+                "⚠️ Financial News API Subscription Issue ⚠️\n\n"
+                "The Financial News feature requires a premium subscription.\n\n"
+                "To fix this issue:\n"
+                "1. Upgrade your Financial Modeling Prep API subscription\n"
+                "2. Visit: https://site.financialmodelingprep.com/developer/docs/pricing\n"
+                "3. Or update the application to use a different API"
+            )
+        else:
+            return f"Unable to fetch financial news: API returned status code {last_status}. Please try again later."
+        
     except Exception as e:
         logger.error(f"Unexpected error fetching financial news: {str(e)}", exc_info=True)
-        return "Unable to fetch financial news at this time. Please try again later."
+        return f"Unable to fetch financial news at this time. Error: {str(e)[:100]}... Please try again later."
+
+def format_stock_news(news_data: list) -> str:
+    """
+    Format stock news data from the Financial Modeling Prep API
+    
+    Args:
+        news_data: List of news items from the API
+        
+    Returns:
+        Formatted news string
+    """
+    formatted_news = "📈 Today's Financial News 📉\n\n"
+    for i, item in enumerate(news_data, 1):
+        formatted_news += f"{i}. {item.get('title', 'No title')}\n"
+        formatted_news += f"   {item.get('site', 'Unknown source')} - {item.get('publishedDate', 'Unknown date')}\n"
+        formatted_news += f"   {item.get('url', 'No URL available')}\n\n"
+    
+    return formatted_news
+
+def format_market_actives(actives_data: list) -> str:
+    """
+    Format market actives data from the Financial Modeling Prep API
+    
+    Args:
+        actives_data: List of active stocks from the API
+        
+    Returns:
+        Formatted actives string
+    """
+    formatted_news = "📈 Today's Most Active Stocks 📉\n\n"
+    for i, item in enumerate(actives_data, 1):
+        formatted_news += f"{i}. {item.get('symbol', '???')} - {item.get('name', 'Unknown company')}\n"
+        formatted_news += f"   Price: ${item.get('price', 0):.2f} | Change: {item.get('change', 0):.2f} ({item.get('changesPercentage', 0):.2f}%)\n"
+        formatted_news += f"   Volume: {item.get('volume', 0):,}\n\n"
+    
+    return formatted_news
+
+def format_press_releases(releases_data: list) -> str:
+    """
+    Format press releases data from the Financial Modeling Prep API
+    
+    Args:
+        releases_data: List of press releases from the API
+        
+    Returns:
+        Formatted press releases string
+    """
+    formatted_news = "📰 Latest Press Releases 📰\n\n"
+    for i, item in enumerate(releases_data, 1):
+        formatted_news += f"{i}. {item.get('title', 'No title')}\n"
+        formatted_news += f"   Date: {item.get('date', 'Unknown date')}\n"
+        formatted_news += f"   {item.get('text', '')[:100]}...\n\n"
+    
+    return formatted_news
 
 def send_financial_news_to_users() -> None:
     """
@@ -466,10 +566,113 @@ def test_encoding():
     
     return jsonify(result)
 
+@app.route("/test_financial_news", methods=['GET'])
+def test_financial_news():
+    """
+    Test endpoint for the financial news API
+    
+    Returns:
+        JSON response with API test results
+    """
+    import requests
+    
+    result = {
+        "message": "Financial News API Test Results",
+        "api_key_available": bool(FINANCIAL_NEWS_API_KEY),
+        "api_key_length": len(FINANCIAL_NEWS_API_KEY) if FINANCIAL_NEWS_API_KEY else 0,
+        "api_key_first_chars": FINANCIAL_NEWS_API_KEY[:4] + "..." if FINANCIAL_NEWS_API_KEY else None,
+    }
+    
+    # Test with or without the API key
+    base_url = "https://financialmodelingprep.com/api/v3/stock_news"
+    
+    # Test without API key (should fail or return limited data)
+    try:
+        logger.info("Testing Financial News API without API key")
+        response = requests.get(f"{base_url}?limit=1", timeout=5)
+        result["no_key_test"] = {
+            "status_code": response.status_code,
+            "content_length": len(response.content),
+            "is_json": is_json(response),
+            "content": response.text[:200] + "..." if len(response.text) > 200 else response.text,
+            "error": None
+        }
+    except Exception as e:
+        result["no_key_test"] = {
+            "error": str(e)
+        }
+    
+    # Test with API key
+    if FINANCIAL_NEWS_API_KEY:
+        try:
+            logger.info("Testing Financial News API with API key")
+            headers = {
+                'User-Agent': 'LineGPT/1.0',
+                'Accept': 'application/json'
+            }
+            url = f"{base_url}?limit=1&apikey={FINANCIAL_NEWS_API_KEY}"
+            response = requests.get(url, timeout=5, headers=headers)
+            
+            result["with_key_test"] = {
+                "status_code": response.status_code,
+                "content_length": len(response.content),
+                "headers": dict(response.headers),
+                "is_json": is_json(response),
+                "raw_content": response.text[:500] + "..." if len(response.text) > 500 else response.text,
+                "error": None
+            }
+            
+            # Try to parse as JSON if possible
+            if is_json(response):
+                response_data = response.json()
+                result["with_key_test"]["json_type"] = type(response_data).__name__
+                result["with_key_test"]["has_data"] = bool(response_data and len(response_data) > 0 if isinstance(response_data, list) else response_data)
+                
+                if isinstance(response_data, list) and len(response_data) > 0:
+                    result["with_key_test"]["sample_data"] = response_data[0]
+                elif isinstance(response_data, dict):
+                    result["with_key_test"]["response_dict"] = response_data
+            
+        except Exception as e:
+            result["with_key_test"] = {
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "traceback": traceback.format_exc()
+            }
+    
+    # Also test the get_financial_news function directly
+    try:
+        result["get_financial_news_test"] = {
+            "result": get_financial_news()[:500] + "..." if len(get_financial_news()) > 500 else get_financial_news()
+        }
+    except Exception as e:
+        result["get_financial_news_test"] = {
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+    
+    return jsonify(result)
+
+def is_json(response):
+    """
+    Check if a response contains valid JSON
+    
+    Args:
+        response: The response object to check
+        
+    Returns:
+        True if the response contains valid JSON, False otherwise
+    """
+    try:
+        response.json()
+        return True
+    except:
+        return False
+
 if __name__ == "__main__":
     # Start the scheduler in a separate thread
     scheduler_thread = threading.Thread(target=schedule_news, daemon=True)
     scheduler_thread.start()
     
     # Run the Flask app
-    app.run(host=HOST, port=PORT, debug=DEBUG)
+    app.run(host=HOST, port=8081, debug=DEBUG)
