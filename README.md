@@ -10,6 +10,17 @@ This bot integrates ChatGPT with LINE messaging platform, allowing users to inte
 - Configurable ChatGPT parameters
 - Daily financial news updates
 - Command system for different interactions
+- Modular architecture with helper modules for better maintainability
+- Improved error handling and logging
+
+## Architecture
+
+LineGPT is built with a modular architecture for better maintainability:
+
+- **app.py**: Main application entry point and webhook handler
+- **line_helpers.py**: Module for LINE API interactions
+- **openai_helpers.py**: Module for OpenAI API interactions
+- **config.py**: Configuration settings and environment variables
 
 ## 🔄 LineGPT Workflow
 
@@ -57,6 +68,31 @@ flowchart LR
 ```
 
 This diagram shows how user messages flow through the LINE platform to the LineGPT server, where they are processed based on command type, then routed to appropriate services (OpenAI API or Financial News API), and finally formatted and sent back to the user through LINE.
+
+## Code Organization
+
+The application code is organized into several modules for better maintainability:
+
+### Main Application (app.py)
+- Handles webhook events from LINE
+- Routes messages to appropriate handlers
+- Manages user sessions and conversation history
+- Provides testing and debugging endpoints
+
+### LINE Helpers Module (line_helpers.py)
+- Encapsulates LINE API interactions
+- Provides functions for sending push and reply messages
+- Handles message formatting and encoding
+
+### OpenAI Helpers Module (openai_helpers.py)
+- Manages OpenAI API interactions
+- Handles conversation history management
+- Provides error handling for API requests
+- Supports language detection and appropriate responses
+
+### Configuration (config.py)
+- Centralizes environment variables and settings
+- Contains API keys and configuration parameters
 
 ## Testing Results
 

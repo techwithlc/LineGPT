@@ -3,13 +3,13 @@ from linebot.v3 import WebhookHandler
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 from linebot.v3.messaging import Configuration, ApiClient, MessagingApi
 from linebot.v3.exceptions import InvalidSignatureError
-from openai import OpenAI
 import requests
 import json
 import threading
 import time
 import schedule
 from datetime import datetime
+from typing import Dict, List, Any, Optional, Union
 from config import (
     LINE_CHANNEL_ACCESS_TOKEN,
     LINE_CHANNEL_SECRET,
@@ -25,6 +25,8 @@ from config import (
 )
 import sys
 import logging
+from line_helpers import send_push_message, send_reply_message
+from openai_helpers import OpenAIChat
 
 # Set up logging
 logging.basicConfig(
@@ -45,10 +47,19 @@ configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 # Initialize OpenAI client
-client = OpenAI(api_key=OPENAI_API_KEY)
+openai_client = OpenAIChat(
+    api_key=OPENAI_API_KEY,
+    system_prompt=SYSTEM_PROMPT,
+    model=CHATGPT_CONFIG.get("model", "gpt-3.5-turbo"),
+    temperature=CHATGPT_CONFIG.get("temperature", 0.7),
+    max_tokens=CHATGPT_CONFIG.get("max_tokens", 500),
+    top_p=CHATGPT_CONFIG.get("top_p", 1.0) if "top_p" in CHATGPT_CONFIG else None,
+    frequency_penalty=CHATGPT_CONFIG.get("frequency_penalty", 0.0) if "frequency_penalty" in CHATGPT_CONFIG else None,
+    presence_penalty=CHATGPT_CONFIG.get("presence_penalty", 0.0) if "presence_penalty" in CHATGPT_CONFIG else None
+)
 
 # Store conversation history
-conversation_history = {}
+conversation_history: Dict[str, List[Dict[str, str]]] = {}
 
 @app.route("/", methods=['GET'])
 def index():
@@ -77,13 +88,17 @@ def health():
         }
     })
 
-def get_financial_news():
+def get_financial_news() -> str:
     """
     Get the latest financial news from a financial news API
+    
+    Returns:
+        Formatted financial news as a string
     """
     try:
         url = f"https://financialmodelingprep.com/api/v3/stock_news?limit=5&apikey={FINANCIAL_NEWS_API_KEY}"
-        response = requests.get(url)
+        response = requests.get(url, timeout=10)  # Added timeout for better error handling
+        response.raise_for_status()  # Raise an exception for bad responses
         news = response.json()
         
         if not news:
@@ -97,11 +112,17 @@ def get_financial_news():
             formatted_news += f"   {item['url']}\n\n"
         
         return formatted_news
+    except requests.RequestException as e:
+        logger.error(f"Error fetching financial news: {str(e)}", exc_info=True)
+        return "Unable to fetch financial news at this time. Please try again later."
+    except (KeyError, ValueError, json.JSONDecodeError) as e:
+        logger.error(f"Error parsing financial news data: {str(e)}", exc_info=True)
+        return "Unable to parse financial news data. Please try again later."
     except Exception as e:
-        print(f"Error fetching financial news: {str(e)}")
+        logger.error(f"Unexpected error fetching financial news: {str(e)}", exc_info=True)
         return "Unable to fetch financial news at this time. Please try again later."
 
-def send_financial_news_to_users():
+def send_financial_news_to_users() -> None:
     """
     Send financial news to all registered users
     """
@@ -115,245 +136,33 @@ def send_financial_news_to_users():
         except Exception as e:
             logger.error(f"Error sending news to user {user_id}: {str(e)}", exc_info=True)
 
-def push_line_message(user_id, text):
+def push_line_message(user_id: str, text: str) -> requests.Response:
     """
     Push a text message to a LINE user
+    
+    Args:
+        user_id: LINE user ID to send message to
+        text: Message text to send
+        
+    Returns:
+        API response
     """
-    # Ensure text is not None and not empty
-    if text is None or text.strip() == '':
-        text = "Sorry, I couldn't generate a response. Please try again."
-        logger.warning("Empty message detected, using fallback text")
-    
-    # Ensure text is a string
-    if not isinstance(text, str):
-        text = str(text)
-        logger.warning(f"Converting non-string message to string: {text}")
-    
-    # Check if text contains any invisible characters or is all whitespace
-    if text.strip() == '':
-        text = "Sorry, I couldn't generate a response. Please try again."
-        logger.warning("Message contains only whitespace, using fallback text")
-    
-    # Ensure text is properly encoded
-    try:
-        # Force encode and decode to ensure valid UTF-8
-        text = text.encode('utf-8', errors='replace').decode('utf-8')
-    except Exception as e:
-        logger.error(f"Error encoding text: {str(e)}")
-        text = "Sorry, I couldn't generate a response due to encoding issues. Please try again."
-    
-    # Final sanity check - if text is still empty or only whitespace after all processing
-    # This is a critical check before sending to LINE API
-    if not text or text.strip() == '':
-        text = "I apologize for the inconvenience. Please try again later."
-        logger.critical("Text is still empty after all processing! Using emergency fallback message")
-    
-    # Truncate if too long
-    if len(text) > 5000:
-        logger.warning(f"Message too long ({len(text)} chars), truncating to 5000 chars")
-        text = text[:4997] + "..."
-    
-    # Create message object with explicit type and text
-    message = {
-        "type": "text",
-        "text": text
-    }
-    
-    # Log the exact message being sent
-    logger.info(f"Pushing message to LINE user {user_id}: {message}")
-    logger.info(f"Message text length: {len(text)}, first 50 chars: {text[:50]}")
-    
-    # Create request payload
-    payload = {
-        "to": user_id,
-        "messages": [message]
-    }
-    
-    # Log the exact payload being sent
-    logger.info(f"Sending LINE API push request: {json.dumps(payload)}")
-    
-    try:
-        # Use requests library to directly call LINE API
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {LINE_CHANNEL_ACCESS_TOKEN}'
-        }
-        
-        # Verify the payload before sending
-        if not payload["messages"][0]["text"] or payload["messages"][0]["text"].strip() == "":
-            logger.critical("CRITICAL ERROR: Message text is empty right before sending!")
-            payload["messages"][0]["text"] = "Emergency fallback message due to empty text."
-        
-        # Double check the payload is valid JSON
-        json_payload = json.dumps(payload)
-        
-        # Send the message
-        response = requests.post(
-            'https://api.line.me/v2/bot/message/push',
-            headers=headers,
-            data=json_payload
-        )
-        
-        # Log the response
-        logger.info(f"Push response status: {response.status_code}")
-        logger.info(f"Push response body: {response.text}")
-        
-        if response.status_code != 200:
-            logger.error(f"Error pushing message: {response.text}")
-            raise Exception(f"LINE API returned status code {response.status_code}: {response.text}")
-        
-        return response
-    except Exception as e:
-        logger.error(f"Error pushing LINE message: {str(e)}", exc_info=True)
-        
-        # Create a guaranteed non-empty fallback message
-        fallback_text = "An error occurred. Please try again."
-        
-        try:
-            logger.info("Attempting to send a simple fallback message")
-            fallback_payload = {
-                "to": user_id,
-                "messages": [{
-                    "type": "text",
-                    "text": fallback_text
-                }]
-            }
-            
-            # Send fallback using requests
-            fallback_response = requests.post(
-                'https://api.line.me/v2/bot/message/push',
-                headers=headers,
-                json=fallback_payload
-            )
-            
-            logger.info(f"Fallback message status: {fallback_response.status_code}")
-            logger.info(f"Fallback message response: {fallback_response.text}")
-            
-            return fallback_response
-        except Exception as inner_e:
-            logger.error(f"Error sending fallback LINE message: {str(inner_e)}", exc_info=True)
-            raise inner_e
+    return send_push_message(user_id, text, LINE_CHANNEL_ACCESS_TOKEN)
 
-def send_line_message(reply_token, text):
+def send_line_message(reply_token: str, text: str) -> requests.Response:
     """
     Send a text message to a LINE user using the reply token
+    
+    Args:
+        reply_token: LINE reply token
+        text: Message text to send
+        
+    Returns:
+        API response
     """
-    # Ensure text is not None and not empty
-    if text is None or text.strip() == '':
-        text = "Sorry, I couldn't generate a response. Please try again."
-        logger.warning("Empty message detected, using fallback text")
-    
-    # Ensure text is a string
-    if not isinstance(text, str):
-        text = str(text)
-        logger.warning(f"Converting non-string message to string: {text}")
-    
-    # Check if text contains any invisible characters or is all whitespace
-    if text.strip() == '':
-        text = "Sorry, I couldn't generate a response. Please try again."
-        logger.warning("Message contains only whitespace, using fallback text")
-    
-    # Ensure text is properly encoded
-    try:
-        # Force encode and decode to ensure valid UTF-8
-        text = text.encode('utf-8', errors='replace').decode('utf-8')
-    except Exception as e:
-        logger.error(f"Error encoding text: {str(e)}")
-        text = "Sorry, I couldn't generate a response due to encoding issues. Please try again."
-    
-    # Final sanity check - if text is still empty or only whitespace after all processing
-    # This is a critical check before sending to LINE API
-    if not text or text.strip() == '':
-        text = "I apologize for the inconvenience. Please try again later."
-        logger.critical("Text is still empty after all processing! Using emergency fallback message")
-    
-    # Truncate if too long
-    if len(text) > 5000:
-        logger.warning(f"Message too long ({len(text)} chars), truncating to 5000 chars")
-        text = text[:4997] + "..."
-    
-    # Create message object with explicit type and text
-    message = {
-        "type": "text",
-        "text": text
-    }
-    
-    # Log the exact message being sent
-    logger.info(f"Sending message with reply token {reply_token}: {message}")
-    logger.info(f"Message text length: {len(text)}, first 50 chars: {text[:50]}")
-    
-    # Create request payload
-    payload = {
-        "replyToken": reply_token,
-        "messages": [message]
-    }
-    
-    # Log the exact payload being sent
-    logger.info(f"Sending LINE API reply request: {json.dumps(payload)}")
-    
-    try:
-        # Use requests library to directly call LINE API
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {LINE_CHANNEL_ACCESS_TOKEN}'
-        }
-        
-        # Verify the payload before sending
-        if not payload["messages"][0]["text"] or payload["messages"][0]["text"].strip() == "":
-            logger.critical("CRITICAL ERROR: Message text is empty right before sending!")
-            payload["messages"][0]["text"] = "Emergency fallback message due to empty text."
-        
-        # Double check the payload is valid JSON
-        json_payload = json.dumps(payload)
-        
-        # Send the message
-        response = requests.post(
-            'https://api.line.me/v2/bot/message/reply',
-            headers=headers,
-            data=json_payload
-        )
-        
-        # Log the response
-        logger.info(f"Reply response status: {response.status_code}")
-        logger.info(f"Reply response body: {response.text}")
-        
-        if response.status_code != 200:
-            logger.error(f"Error sending reply: {response.text}")
-            raise Exception(f"LINE API returned status code {response.status_code}: {response.text}")
-        
-        return response
-    except Exception as e:
-        logger.error(f"Error sending LINE reply: {str(e)}", exc_info=True)
-        
-        # Create a guaranteed non-empty fallback message
-        fallback_text = "An error occurred. Please try again."
-        
-        try:
-            logger.info("Attempting to send a simple fallback message")
-            fallback_payload = {
-                "replyToken": reply_token,
-                "messages": [{
-                    "type": "text",
-                    "text": fallback_text
-                }]
-            }
-            
-            # Send fallback using requests
-            fallback_response = requests.post(
-                'https://api.line.me/v2/bot/message/reply',
-                headers=headers,
-                json=fallback_payload
-            )
-            
-            logger.info(f"Fallback message status: {fallback_response.status_code}")
-            logger.info(f"Fallback message response: {fallback_response.text}")
-            
-            return fallback_response
-        except Exception as inner_e:
-            logger.error(f"Error sending fallback LINE reply: {str(inner_e)}", exc_info=True)
-            raise inner_e
+    return send_reply_message(reply_token, text, LINE_CHANNEL_ACCESS_TOKEN)
 
-def schedule_news():
+def schedule_news() -> None:
     """
     Schedule daily financial news updates
     """
@@ -366,99 +175,44 @@ def schedule_news():
 def get_chatgpt_response(user_id: str, message: str) -> str:
     """
     Get a response from ChatGPT
+    
+    Args:
+        user_id: User ID for conversation tracking
+        message: User message to respond to
+        
+    Returns:
+        ChatGPT response
     """
-    # Log the received message
-    logger.info(f"Received message from user {user_id}: '{message}'")
+    # Get the user's conversation history if it exists
+    user_history = conversation_history.get(user_id, [])
     
-    # Check if message is empty
-    if not message or message.strip() == "":
-        logger.warning("Empty message received")
-        return "Please provide a message for me to respond to."
+    # Get response from OpenAI
+    response = openai_client.get_response(
+        message=message,
+        conversation_history=user_history,
+        add_language_instruction=True
+    )
     
-    # Initialize conversation history if not exists
-    if user_id not in conversation_history:
-        conversation_history[user_id] = []
+    # Update conversation history
+    openai_client.manage_conversation_history(
+        user_id=user_id,
+        message=message,
+        response=response,
+        conversation_history=conversation_history,
+        max_history_length=MAX_HISTORY_LENGTH
+    )
     
-    # Prepare system message
-    system_message = SYSTEM_PROMPT
-    
-    # Check for non-ASCII characters (like Chinese)
-    has_non_ascii = any(ord(c) > 127 for c in message)
-    if has_non_ascii:
-        logger.info("Detected non-ASCII characters in message, adding language instruction to system prompt")
-        system_message += " Please respond in the same language as the user's message."
-    
-    try:
-        # Initialize OpenAI client
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        
-        # Prepare messages for the API call
-        messages = [
-            {"role": "system", "content": system_message}
-        ]
-        
-        # Add conversation history
-        for msg in conversation_history[user_id]:
-            messages.append(msg)
-        
-        # Add the current message
-        messages.append({"role": "user", "content": message})
-        
-        # Log the request being sent
-        logger.info(f"Sending request to OpenAI with message: '{message}'")
-        
-        # Create parameters dict from CHATGPT_CONFIG, handling missing keys gracefully
-        openai_params = {
-            "model": CHATGPT_CONFIG.get("model", "gpt-3.5-turbo"),
-            "messages": messages,
-            "temperature": CHATGPT_CONFIG.get("temperature", 0.7),
-            "max_tokens": CHATGPT_CONFIG.get("max_tokens", 500)
-        }
-        
-        # Add optional parameters only if they exist in config
-        if "top_p" in CHATGPT_CONFIG:
-            openai_params["top_p"] = CHATGPT_CONFIG["top_p"]
-        if "frequency_penalty" in CHATGPT_CONFIG:
-            openai_params["frequency_penalty"] = CHATGPT_CONFIG["frequency_penalty"]
-        if "presence_penalty" in CHATGPT_CONFIG:
-            openai_params["presence_penalty"] = CHATGPT_CONFIG["presence_penalty"]
-        
-        # Make the API call with validated parameters
-        response = client.chat.completions.create(**openai_params)
-        
-        # Extract the response text
-        assistant_message = response.choices[0].message.content
-        
-        # Check if response is empty
-        if not assistant_message or assistant_message.strip() == "":
-            logger.warning("Received empty response from OpenAI")
-            assistant_message = "I apologize, but I couldn't generate a response. Please try again."
-        
-        # Log the response
-        logger.info(f"Received response from OpenAI: '{assistant_message}'")
-        
-        # Update conversation history
-        conversation_history[user_id].append({"role": "user", "content": message})
-        conversation_history[user_id].append({"role": "assistant", "content": assistant_message})
-        
-        # Trim conversation history if it gets too long
-        if len(conversation_history[user_id]) > MAX_HISTORY_LENGTH * 2:  # *2 because each exchange has 2 messages
-            conversation_history[user_id] = conversation_history[user_id][-MAX_HISTORY_LENGTH * 2:]
-            logger.info(f"Trimmed conversation history for user {user_id}")
-        
-        return assistant_message
-        
-    except KeyError as e:
-        logger.error(f"Error getting response from OpenAI: '{str(e)}'", exc_info=True)
-        return "I apologize, but I encountered an error while processing your request. Please try again later."
-        
-    except Exception as e:
-        logger.error(f"Error getting response from OpenAI: {str(e)}", exc_info=True)
-        return "I apologize, but I encountered an error while processing your request. Please try again later."
+    return response
 
 def reset_conversation(user_id: str) -> str:
     """
     Reset the conversation history for a user
+    
+    Args:
+        user_id: User ID to reset conversation for
+        
+    Returns:
+        Confirmation message
     """
     if user_id in conversation_history:
         conversation_history[user_id] = []
@@ -469,6 +223,9 @@ def reset_conversation(user_id: str) -> str:
 def callback():
     """
     Handle LINE webhook callbacks
+    
+    Returns:
+        HTTP response
     """
     try:
         # Get X-Line-Signature header value
@@ -481,7 +238,7 @@ def callback():
         body = request.get_data(as_text=True)
         logger.info(f"Request body: {body}")
         
-        # If signature is missing, log a warning and return 400
+        # If signature is missing, log a warning and try to process as test request
         if not signature:
             logger.warning("X-Line-Signature header is missing. This request may not be from LINE.")
             logger.warning("This is expected for test requests but not for actual LINE webhooks.")
@@ -539,6 +296,9 @@ def callback():
 def verify_webhook():
     """
     Handle LINE webhook verification
+    
+    Returns:
+        Verification message
     """
     return 'Webhook verification successful!'
 
@@ -546,6 +306,9 @@ def verify_webhook():
 def handle_text_message(event):
     """
     Handle text messages from LINE
+    
+    Args:
+        event: LINE message event
     """
     user_id = event.source.user_id
     message = event.message.text
@@ -631,278 +394,13 @@ def handle_text_message(event):
         except Exception as inner_e:
             logger.error(f"Error sending error message: {str(inner_e)}", exc_info=True)
 
-@app.route("/send_news", methods=['GET'])
-def trigger_news_sending():
-    """
-    Endpoint to manually trigger sending news to all users
-    """
-    try:
-        send_financial_news_to_users()
-        return jsonify({"status": "success", "message": "Financial news sent to all users"})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-@app.route("/get_user_id", methods=['GET'])
-def get_user_id():
-    """
-    Endpoint to help users get their LINE user ID
-    """
-    return jsonify({
-        "message": "Send a message to your LINE bot, then check the logs or the /debug endpoint to find your user ID",
-        "instructions": [
-            "1. Make sure your webhook URL is set in the LINE Developers Console",
-            "2. Send a message to your LINE bot",
-            "3. Check the logs for a message like 'Received message from USER_ID: ...'",
-            "4. Use that USER_ID for testing with the /test_message endpoint"
-        ],
-        "debug_url": f"{request.url_root}debug"
-    })
-
-@app.route("/debug", methods=['GET'])
-def debug_info():
-    """
-    Debug endpoint to check the status of the application
-    """
-    # Get the list of users with conversation history
-    users_with_history = list(conversation_history.keys())
-    
-    # Get system information
-    import sys
-    import locale
-    
-    return jsonify({
-        "service": "LineGPT Bot",
-        "status": "running",
-        "python_version": sys.version,
-        "encoding": {
-            "default": sys.getdefaultencoding(),
-            "filesystem": sys.getfilesystemencoding(),
-            "stdout": sys.stdout.encoding
-        },
-        "line_api": {
-            "channel_secret_length": len(LINE_CHANNEL_SECRET) if LINE_CHANNEL_SECRET else 0,
-            "channel_access_token_length": len(LINE_CHANNEL_ACCESS_TOKEN) if LINE_CHANNEL_ACCESS_TOKEN else 0
-        },
-        "openai_api": {
-            "api_key_length": len(OPENAI_API_KEY) if OPENAI_API_KEY else 0,
-            "model": CHATGPT_CONFIG.get("model", "unknown")
-        },
-        "users": {
-            "conversation_history_users": len(users_with_history),
-            "registered_users": len(USER_IDS),
-            "recent_users": users_with_history[:5] if users_with_history else []
-        },
-        "webhook_url": f"{request.url_root}callback"
-    })
-
-@app.route("/test_message", methods=['GET'])
-def test_message():
-    """
-    Test endpoint to send a message to a user
-    """
-    user_id = request.args.get('user_id')
-    message = request.args.get('message', 'This is a test message from LineGPT.')
-    
-    if not user_id:
-        return jsonify({
-            "status": "error",
-            "message": "Missing user_id parameter"
-        }), 400
-    
-    try:
-        push_line_message(user_id, message)
-        return jsonify({
-            "status": "success",
-            "message": f"Test message sent to user {user_id}"
-        })
-    except Exception as e:
-        logger.error(f"Error sending test message: {str(e)}", exc_info=True)
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
-
-@app.route('/test_chinese')
-def test_chinese():
-    """
-    Debug endpoint to test sending Chinese messages
-    """
-    user_id = request.args.get('user_id')
-    
-    if not user_id:
-        return jsonify({"error": "Missing user_id parameter"}), 400
-    
-    # Test messages in different languages
-    test_messages = [
-        "你好，这是一条测试消息。",  # Chinese
-        "Hello, this is a test message.",  # English
-        "こんにちは、これはテストメッセージです。",  # Japanese
-        "안녕하세요, 이것은 테스트 메시지입니다.",  # Korean
-        "สวัสดี นี่คือข้อความทดสอบ",  # Thai
-        "Привет, это тестовое сообщение.",  # Russian
-        "مرحبا، هذه رسالة اختبار."  # Arabic
-    ]
-    
-    results = []
-    
-    for i, message in enumerate(test_messages):
-        try:
-            # Log the message being tested
-            logger.info(f"Testing message {i+1}: {message}")
-            logger.info(f"Message length: {len(message)}, bytes: {len(message.encode('utf-8'))}")
-            
-            # Create message object
-            line_message = {
-                "type": "text",
-                "text": message
-            }
-            
-            # Create request payload
-            payload = {
-                "to": user_id,
-                "messages": [line_message]
-            }
-            
-            # Log the payload
-            logger.info(f"Sending test message payload: {json.dumps(payload)}")
-            
-            # Send the message
-            headers = {
-                'Content-Type': 'application/json',
-                'Authorization': f'Bearer {LINE_CHANNEL_ACCESS_TOKEN}'
-            }
-            
-            # Convert payload to JSON string
-            json_payload = json.dumps(payload)
-            
-            # Send the message
-            response = requests.post(
-                'https://api.line.me/v2/bot/message/push',
-                headers=headers,
-                data=json_payload
-            )
-            
-            # Log the response
-            logger.info(f"Test message {i+1} response status: {response.status_code}")
-            logger.info(f"Test message {i+1} response body: {response.text}")
-            
-            # Add result
-            results.append({
-                "message": message,
-                "success": response.status_code == 200,
-                "status_code": response.status_code,
-                "response": response.json() if response.status_code == 200 else response.text
-            })
-            
-            # Wait a bit between messages to avoid rate limiting
-            time.sleep(1)
-            
-        except Exception as e:
-            logger.error(f"Error sending test message {i+1}: {str(e)}", exc_info=True)
-            results.append({
-                "message": message,
-                "success": False,
-                "error": str(e)
-            })
-    
-    return jsonify({
-        "success": True,
-        "results": results
-    })
-
-@app.route('/raw_message')
-def raw_message():
-    """
-    Debug endpoint to send a raw message to LINE API
-    """
-    user_id = request.args.get('user_id')
-    message = request.args.get('message', 'Test message from raw endpoint')
-    
-    if not user_id:
-        return jsonify({"error": "Missing user_id parameter"}), 400
-    
-    # Ensure message is not None and not empty
-    if message is None or message.strip() == '':
-        message = "Test message from raw endpoint"
-        logger.warning("Empty message detected, using default test message")
-    
-    # Ensure message is properly encoded
-    try:
-        # Force encode and decode to ensure valid UTF-8
-        message = message.encode('utf-8', errors='replace').decode('utf-8')
-    except Exception as e:
-        logger.error(f"Error encoding message: {str(e)}")
-        message = "Test message (encoding error occurred)"
-    
-    # Truncate if too long
-    if len(message) > 5000:
-        logger.warning(f"Message too long ({len(message)} chars), truncating to 5000 chars")
-        message = message[:4997] + "..."
-    
-    # Create message object with explicit type and text
-    line_message = {
-        "type": "text",
-        "text": message
-    }
-    
-    # Create request payload
-    payload = {
-        "to": user_id,
-        "messages": [line_message]
-    }
-    
-    # Log the exact payload being sent
-    logger.info(f"Sending raw LINE API request: {json.dumps(payload)}")
-    logger.info(f"Message text length: {len(message)}, first 50 chars: {message[:50]}")
-    
-    try:
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {LINE_CHANNEL_ACCESS_TOKEN}'
-        }
-        
-        # Verify the payload before sending
-        if not payload["messages"][0]["text"] or payload["messages"][0]["text"].strip() == "":
-            logger.critical("CRITICAL ERROR: Message text is empty right before sending!")
-            payload["messages"][0]["text"] = "Emergency fallback message due to empty text."
-        
-        # Double check the payload is valid JSON
-        json_payload = json.dumps(payload)
-        
-        # Send the message
-        response = requests.post(
-            'https://api.line.me/v2/bot/message/push',
-            headers=headers,
-            data=json_payload
-        )
-        
-        # Log the response
-        logger.info(f"Raw message response status: {response.status_code}")
-        logger.info(f"Raw message response body: {response.text}")
-        
-        if response.status_code != 200:
-            logger.error(f"Error sending raw message: {response.text}")
-            return jsonify({
-                "error": f"LINE API returned status code {response.status_code}",
-                "details": response.text
-            }), 500
-        
-        return jsonify({
-            "success": True,
-            "message": "Message sent successfully",
-            "response": response.json()
-        })
-    except Exception as e:
-        logger.error(f"Error sending raw LINE message: {str(e)}", exc_info=True)
-        return jsonify({
-            "error": "Failed to send message",
-            "details": str(e)
-        }), 500
-
 @app.route("/test_encoding", methods=['GET'])
 def test_encoding():
     """
     Test endpoint for encoding issues
+    
+    Returns:
+        JSON response with encoding test results
     """
     user_id = request.args.get('user_id', '')
     text = request.args.get('text', '测试中文编码 (Testing Chinese encoding)')
@@ -947,127 +445,31 @@ def test_encoding():
             # If user_id is provided, try to send a test message
             logger.info(f"Attempting to send test message to user {user_id}")
             
-            # Initialize OpenAI client
-            client = OpenAI(api_key=OPENAI_API_KEY)
+            # Get response from OpenAI using our helper
+            response = openai_client.get_response(text)
             
-            # Create a simple test payload
-            messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": text}
-            ]
-            
-            # Create parameters dict
-            openai_params = {
-                "model": CHATGPT_CONFIG.get("model", "gpt-3.5-turbo"),
-                "messages": messages,
-                "temperature": CHATGPT_CONFIG.get("temperature", 0.7),
-                "max_tokens": CHATGPT_CONFIG.get("max_tokens", 100)
-            }
-            
-            # Add top_p if it exists
-            if "top_p" in CHATGPT_CONFIG:
-                openai_params["top_p"] = CHATGPT_CONFIG["top_p"]
-            
-            # Make the API call
-            response = client.chat.completions.create(**openai_params)
-            
-            # Extract response text
-            assistant_message = response.choices[0].message.content
-            
-            # Send to user
+            # Add test results to response
             result["openai_test"] = {
                 "success": True,
                 "input": text,
-                "response": assistant_message
+                "response": response
             }
             
             # Try to push message to user
-            if LINE_CHANNEL_ACCESS_TOKEN:
-                configuration = Configuration(
-                    access_token=LINE_CHANNEL_ACCESS_TOKEN
-                )
-                with ApiClient(configuration) as api_client:
-                    api_instance = MessagingApi(api_client)
-                    
-                    # Construct push message payload
-                    push_payload = {
-                        "to": user_id,
-                        "messages": [
-                            {
-                                "type": "text",
-                                "text": f"Encoding Test: {assistant_message}"
-                            }
-                        ]
-                    }
-                    
-                    # Send the message
-                    push_response = api_instance.push_message_with_http_info(push_payload)
-                    result["line_push_test"] = {
-                        "success": True,
-                        "response": str(push_response)
-                    }
-            
+            push_response = push_line_message(user_id, f"Encoding Test: {response}")
+            result["line_push_test"] = {
+                "success": True,
+                "response": str(push_response)
+            }
         except Exception as e:
             result["test_error"] = str(e)
     
     return jsonify(result)
-
-@app.route('/test_broadcast')
-def test_broadcast():
-    """
-    Debug endpoint to test sending a message to all registered users
-    """
-    message = request.args.get('message', 'This is a test broadcast message to all users.')
-    
-    if not USER_IDS:
-        return jsonify({
-            "error": "No registered users found",
-            "message": "Please add user IDs to the USER_IDS list in the .env file"
-        }), 400
-    
-    results = []
-    
-    # Log the broadcast attempt
-    logger.info(f"Attempting to broadcast message to {len(USER_IDS)} users: {message}")
-    
-    for i, user_id in enumerate(USER_IDS):
-        try:
-            # Log the user being messaged
-            logger.info(f"Sending broadcast to user {i+1}/{len(USER_IDS)}: {user_id}")
-            
-            # Use the push_line_message function to send the message
-            response = push_line_message(user_id, message)
-            
-            # Add result
-            results.append({
-                "user_id": user_id,
-                "success": True if hasattr(response, 'status_code') and response.status_code == 200 else False,
-                "status_code": response.status_code if hasattr(response, 'status_code') else None,
-                "response": response.json() if hasattr(response, 'json') and callable(response.json) else str(response)
-            })
-            
-            # Wait a bit between messages to avoid rate limiting
-            time.sleep(1)
-            
-        except Exception as e:
-            logger.error(f"Error broadcasting to user {user_id}: {str(e)}", exc_info=True)
-            results.append({
-                "user_id": user_id,
-                "success": False,
-                "error": str(e)
-            })
-    
-    return jsonify({
-        "success": True,
-        "message": f"Broadcast attempted to {len(USER_IDS)} users",
-        "results": results
-    })
 
 if __name__ == "__main__":
     # Start the scheduler in a separate thread
     scheduler_thread = threading.Thread(target=schedule_news, daemon=True)
     scheduler_thread.start()
     
-    # Use a different port to avoid conflict with AirPlay
-    PORT = 8080
-    app.run(host=HOST, port=PORT, debug=DEBUG) 
+    # Run the Flask app
+    app.run(host=HOST, port=PORT, debug=DEBUG)
